@@ -102,7 +102,9 @@ func (l *Loader) Load(tx *Tx, n int) {
 		pos := l.loadQueue[0]
 		c := tx.w.chunk(pos)
 
+		done := tx.World().Metrics().MeasureOperation("chunk_encode")
 		l.viewer.ViewChunk(pos, l.w.Dimension(), c.BlockEntities, c.Chunk)
+		done()
 		l.w.addViewer(tx, c, l)
 
 		l.loaded[pos] = c

@@ -27,6 +27,9 @@ func (s *Session) ViewChunk(pos world.ChunkPos, dim world.Dimension, blockEntiti
 
 // ViewSubChunks ...
 func (s *Session) ViewSubChunks(centre world.SubChunkPos, offsets []protocol.SubChunkOffset, tx *world.Tx) {
+	done := tx.World().Metrics().MeasureOperation("subchunk_encode")
+	defer done()
+
 	r := tx.Range()
 
 	entries := make([]protocol.SubChunkEntry, 0, len(offsets))

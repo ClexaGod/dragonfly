@@ -2,16 +2,20 @@ package main
 
 import (
 	"fmt"
-	"github.com/df-mc/dragonfly/server"
-	"github.com/df-mc/dragonfly/server/player/chat"
-	"github.com/pelletier/go-toml"
 	"log/slog"
 	"os"
+
+	"github.com/df-mc/dragonfly/server"
+	"github.com/df-mc/dragonfly/server/cmd/builtin"
+	"github.com/df-mc/dragonfly/server/player/chat"
+	"github.com/pelletier/go-toml"
 )
 
 func main() {
 	slog.SetLogLoggerLevel(slog.LevelDebug)
 	chat.Global.Subscribe(chat.StdoutSubscriber{})
+	builtin.RegisterPerformance()
+
 	conf, err := readConfig(slog.Default())
 	if err != nil {
 		panic(err)

@@ -24,7 +24,7 @@ func (t ticker) tickLoop(w *World) {
 	for {
 		select {
 		case <-tc.C:
-			<-w.Exec(t.tick)
+			<-w.exec("world_tick", t.tick)
 		case <-w.closing:
 			// World is being closed: Stop ticking and get rid of a task.
 			w.running.Done()
@@ -38,6 +38,11 @@ func (t ticker) tickLoop(w *World) {
 func (t ticker) tick(tx *Tx) {
 	viewers, loaders := tx.World().allViewers()
 	w := tx.World()
+	started := time.Now()
+	defer func() {
+		w.metrics.RecordTick(time.Since(started), time.Now())
+		w.metrics.SetState(len(w.chunks), len(w.entities), len(viewers))
+	}()
 
 	w.set.Lock()
 	if s := w.set.Spawn; s[1] > tx.Range()[1] && w.Dimension() == Overworld {

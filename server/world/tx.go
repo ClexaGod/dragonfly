@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/df-mc/dragonfly/server/block/cube"
+	"github.com/df-mc/dragonfly/server/performance"
 	"github.com/df-mc/dragonfly/server/player/chat"
 	"github.com/df-mc/dragonfly/server/world/redstone"
 	"github.com/go-gl/mathgl/mgl64"
@@ -346,13 +347,17 @@ func (tx *Tx) close() {
 // normalTransaction is added to the transaction queue for transactions created
 // using World.Exec().
 type normalTransaction struct {
-	c chan struct{}
-	f func(tx *Tx)
+	c     chan struct{}
+	f     func(tx *Tx)
+	token performance.TransactionToken
 }
 
 // Run creates a *Tx, calls ntx.f, closes the transaction and finally closes
 // ntx.c.
 func (ntx normalTransaction) Run(w *World) {
+	started := w.metrics.StartTransaction(ntx.token)
+	defer w.metrics.EndTransaction(ntx.token, started)
+
 	tx := &Tx{w: w}
 	ntx.f(tx)
 	tx.close()
@@ -366,12 +371,16 @@ type weakTransaction struct {
 	f       func(tx *Tx)
 	invalid *atomic.Bool
 	cond    *sync.Cond
+	token   performance.TransactionToken
 }
 
 // Run runs the transaction, first checking if its invalid bool is false and
 // creating a *Tx if so. Afterwards, a bool indicating if the transaction was
 // run is added to wtx.c. Finally, wtx.cond.Broadcast() is called.
 func (wtx weakTransaction) Run(w *World) {
+	started := w.metrics.StartTransaction(wtx.token)
+	defer w.metrics.EndTransaction(wtx.token, started)
+
 	valid := !wtx.invalid.Load()
 	if valid {
 		tx := &Tx{w: w}

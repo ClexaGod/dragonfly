@@ -15,6 +15,7 @@ import (
 	"github.com/df-mc/dragonfly/server/block/cube"
 	"github.com/df-mc/dragonfly/server/event"
 	"github.com/df-mc/dragonfly/server/internal/sliceutil"
+	"github.com/df-mc/dragonfly/server/performance"
 	"github.com/df-mc/dragonfly/server/world/chunk"
 	"github.com/df-mc/dragonfly/server/world/redstone"
 	"github.com/df-mc/goleveldb/leveldb"
@@ -34,6 +35,7 @@ type World struct {
 	queue        chan transaction
 	queueClosing chan struct{}
 	queueing     sync.WaitGroup
+	metrics      *performance.WorldMetrics
 
 	// advance is a bool that specifies if this World should advance the current
 	// tick, time and weather saved in the Settings struct held by the World.
@@ -98,6 +100,12 @@ func (w *World) Name() string {
 	return w.set.Name
 }
 
+// Metrics returns the bounded performance measurements collected for the
+// world.
+func (w *World) Metrics() *performance.WorldMetrics {
+	return w.metrics
+}
+
 // Dimension returns the Dimension assigned to the World in world.New. The sky
 // colour and behaviour of a variety of world features differ based on the
 // Dimension.
@@ -122,14 +130,20 @@ type ExecFunc func(tx *Tx)
 // Exec performs a synchronised transaction f on a World. Exec returns a channel
 // that is closed once the transaction is complete.
 func (w *World) Exec(f ExecFunc) <-chan struct{} {
+	return w.exec("exec", f)
+}
+
+// exec performs a named transaction. Names are fixed by the caller and are
+// used to attribute queue wait and execution time in performance reports.
+func (w *World) exec(kind string, f ExecFunc) <-chan struct{} {
 	c := make(chan struct{})
-	w.queue <- normalTransaction{c: c, f: f}
+	w.queue <- normalTransaction{c: c, f: f, token: w.metrics.BeginTransaction(kind)}
 	return c
 }
 
 func (w *World) weakExec(invalid *atomic.Bool, cond *sync.Cond, f ExecFunc) <-chan bool {
 	c := make(chan bool, 1)
-	w.queue <- weakTransaction{c: c, f: f, invalid: invalid, cond: cond}
+	w.queue <- weakTransaction{c: c, f: f, invalid: invalid, cond: cond, token: w.metrics.BeginTransaction("weak_exec")}
 	return c
 }
 
@@ -1021,7 +1035,7 @@ func (w *World) PortalDestination(dim Dimension) *World {
 
 // Save saves the World to the provider.
 func (w *World) Save() {
-	<-w.Exec(w.save(w.saveChunk))
+	<-w.exec("world_save", w.save(w.saveChunk))
 }
 
 // save saves all loaded chunks to the World's provider.
@@ -1042,6 +1056,9 @@ func (w *World) save(f func(*Tx, ChunkPos, *Column)) ExecFunc {
 // saveChunk saves a chunk and its entities to disk after compacting the chunk.
 func (w *World) saveChunk(_ *Tx, pos ChunkPos, c *Column) {
 	if !w.conf.ReadOnly && c.modified {
+		done := w.metrics.MeasureOperation("chunk_save")
+		defer done()
+
 		c.Compact()
 		if err := w.conf.Provider.StoreColumn(pos, w.conf.Dim, w.columnTo(c, pos)); err != nil {
 			w.conf.Log.Error("save chunk: "+err.Error(), "X", pos[0], "Z", pos[1])
@@ -1074,7 +1091,9 @@ func (w *World) Close() error {
 // close stops the World from ticking, saves all chunks to the Provider and
 // updates the world's settings.
 func (w *World) close() {
-	<-w.Exec(func(tx *Tx) {
+	defer w.metrics.Close()
+
+	<-w.exec("world_close", func(tx *Tx) {
 		// Let user code run anything that needs to be finished before closing.
 		w.Handler().HandleClose(tx)
 		w.Handle(NopHandler{})
@@ -1187,19 +1206,25 @@ func (w *World) chunk(pos ChunkPos) *Column {
 		return c
 	}
 	c, err := w.loadChunk(pos)
+	done := w.metrics.MeasureOperation("chunk_light_fill")
 	chunk.LightArea([]*chunk.Chunk{c.Chunk}, int(pos[0]), int(pos[1])).Fill()
+	done()
 	if err != nil {
 		w.conf.Log.Error("load chunk: "+err.Error(), "X", pos[0], "Z", pos[1])
 		return c
 	}
+	done = w.metrics.MeasureOperation("chunk_light_spread")
 	w.calculateLight(pos)
+	done()
 	return c
 }
 
 // loadChunk attempts to load a chunk from the provider, or generates a chunk
 // if one doesn't currently exist.
 func (w *World) loadChunk(pos ChunkPos) (*Column, error) {
+	done := w.metrics.MeasureOperation("chunk_load")
 	column, err := w.conf.Provider.LoadColumn(pos, w.conf.Dim)
+	done()
 	switch {
 	case err == nil:
 		col := w.columnFrom(column, pos)
@@ -1214,7 +1239,9 @@ func (w *World) loadChunk(pos ChunkPos) (*Column, error) {
 		col := newColumn(chunk.New(w.conf.Blocks, w.Range()))
 		w.chunks[pos] = col
 
+		done = w.metrics.MeasureOperation("chunk_generate")
 		w.conf.Generator.GenerateChunk(pos, col.Chunk)
+		done()
 		return col, nil
 	default:
 		return newColumn(chunk.New(w.conf.Blocks, w.Range())), err
@@ -1271,7 +1298,7 @@ func (w *World) autoSave() {
 	for {
 		select {
 		case <-closeUnused.C:
-			<-w.Exec(w.closeUnusedChunks)
+			<-w.exec("chunk_unload", w.closeUnusedChunks)
 		case <-save.C:
 			w.Save()
 		case <-w.closing:

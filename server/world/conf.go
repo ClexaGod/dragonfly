@@ -1,9 +1,12 @@
 package world
 
 import (
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"time"
+
+	"github.com/df-mc/dragonfly/server/performance"
 )
 
 type blockRegistrySetter interface {
@@ -125,6 +128,7 @@ func (conf Config) New() *World {
 		queueClosing:     make(chan struct{}),
 		closing:          make(chan struct{}),
 		queue:            make(chan transaction, 128),
+		metrics:          performance.NewWorldMetrics(s.Name, fmt.Sprint(conf.Dim)),
 		r:                rand.New(conf.RandSource),
 		advance:          s.ref.Add(1) == 1,
 		conf:             conf,
@@ -143,6 +147,6 @@ func (conf Config) New() *World {
 	go w.autoSave()
 	go w.handleTransactions()
 
-	<-w.Exec(t.tick)
+	<-w.exec("world_initial_tick", t.tick)
 	return w
 }
